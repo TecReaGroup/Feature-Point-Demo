@@ -1,0 +1,103 @@
+[project]
+name = "feature-point-demo"
+version = "0.1.0"
+description = "Live ALIKED and LightGlue object localization with PySide6."
+requires-python = ">=3.12"
+dependencies = [
+    "pyside6>=6.8,<7",
+    "opencv-python>=4.10,<5",
+    "numpy>=1.26,<3",
+    "torch>=2.7,<3",
+    "torchvision>=0.22,<1",
+    "lightglue",
+]
+
+[project.scripts]
+feature-point = "feature_point.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.17.0",
+    "pytest>=8.4.0",
+    "pytest-cov>=6.2.0",
+    "ruff>=0.12.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+cache-dir = ".uv-cache"
+python-preference = "only-managed"
+
+[tool.uv.sources]
+lightglue = { git = "https://github.com/cvg/LightGlue.git", rev = "eb42fee2d71449efb0aa5c10549752b5d75384d8" }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.build-backend]
+module-name = "feature_point"
+module-root = "src"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "test"]
+
+[tool.ruff.lint]
+select = [
+    "A",
+    "ANN",
+    "ARG",
+    "B",
+    "C4",
+    "E",
+    "F",
+    "I",
+    "N",
+    "PERF",
+    "PIE",
+    "PTH",
+    "RUF",
+    "SIM",
+    "UP",
+    "W",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"test/**/*.py" = ["ANN"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "test"]
+pretty = true
+show_error_codes = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--cov=feature_point",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-fail-under=80",
+]
+testpaths = ["test"]
+
+[tool.coverage.run]
+branch = true
+source = ["feature_point"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]

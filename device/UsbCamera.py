@@ -1,0 +1,139 @@
+# -*- coding: utf-8 -*-
+"""OpenCV driver for standard USB cameras."""
+
+import logging
+import threading
+import time
+
+import cv2
+
+class _CameraHandleValidator:
+    """Provide the handle validation API used by the sampling controller."""
+
+    @staticmethod
+    def isValidHandle(handle):
+        try:
+            return handle is not None and handle.isOpened()
+        except Exception:
+            return False
+
+
+class UsbCamera:
+    """Camera adapter for standard USB cameras accessed through OpenCV."""
+
+    def __init__(self, cameraConfig):
+        self.cameraConfig = cameraConfig
+        self.deviceId = cameraConfig.get("deviceId", 0)
+        try:
+            camera_index = int(self.deviceId)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "USB camera deviceId must be a camera index such as 0 or 1"
+            ) from exc
+
+        self.cameraId = str(camera_index)
+        self.runStatus = 0
+        self.condition = threading.Condition()
+        self.latest = None
+
+        backend_name = str(cameraConfig.get("backend", "dshow")).lower()
+        backend_candidates = []
+        if backend_name in ("dshow", "directshow") and hasattr(cv2, "CAP_DSHOW"):
+            backend_candidates.append(("DSHOW", cv2.CAP_DSHOW))
+        if backend_name in ("msmf", "microsoft") and hasattr(cv2, "CAP_MSMF"):
+            backend_candidates.append(("MSMF", cv2.CAP_MSMF))
+        backend_candidates.append(("default", None))
+
+        self.cap = None
+        opened_backend = None
+        for name, backend in backend_candidates:
+            cap = cv2.VideoCapture(camera_index) if backend is None else cv2.VideoCapture(camera_index, backend)
+            if cap.isOpened():
+                self.cap = cap
+                opened_backend = name
+                break
+            cap.release()
+
+        if self.cap is None:
+            raise RuntimeError(
+                f"无法打开USB摄像头索引: {camera_index}，尝试后端: "
+                f"{', '.join(name for name, _ in backend_candidates)}"
+            )
+
+        self._configureCapture()
+        self.handle = self.cap
+        self.cl = _CameraHandleValidator()
+        self.backend = opened_backend
+        logging.getLogger(__name__).info(
+            "Camera ready backend=%s resolution=%dx%d fps=%.1f", opened_backend,
+            self.cap.get(cv2.CAP_PROP_FRAME_WIDTH), self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
+            self.cap.get(cv2.CAP_PROP_FPS),
+        )
+
+        self.thread = threading.Thread(target=self._videoThread, daemon=True)
+        self.thread.start()
+
+    def _configureCapture(self):
+        width = self.cameraConfig.get("colorImageSizeX")
+        height = self.cameraConfig.get("colorImageSizeY")
+        fps = self.cameraConfig.get("fps")
+
+        if width:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(width))
+        if height:
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
+        if fps:
+            self.cap.set(cv2.CAP_PROP_FPS, float(fps))
+
+        fourcc = str(self.cameraConfig.get("fourcc", "MJPG"))[:4]
+        if len(fourcc) == 4:
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+
+    def open(self):
+        self.runStatus = 10
+
+    def close(self):
+        self.runStatus = 1
+
+    def getFrame(self, timeout=0.01):
+        with self.condition:
+            self.condition.wait_for(lambda: self.latest is not None or self.runStatus < 0, timeout)
+            latest, self.latest = self.latest, None
+            return latest if latest is not None else (None, None)
+
+    def stopThread(self):
+        self.runStatus = -1
+        with self.condition:
+            self.condition.notify_all()
+        if self.thread.is_alive():
+            self.thread.join(timeout=2.0)
+        if self.cap is not None:
+            self.cap.release()
+            self.handle = None
+
+    def _videoThread(self):
+        overwritten = failures = 0
+        reported_at = time.perf_counter()
+        while self.runStatus >= 0:
+            if self.runStatus != 10:
+                time.sleep(0.05)
+                continue
+
+            ok, frame = self.cap.read()
+            captured_at = time.perf_counter()
+            if ok and frame is not None:
+                with self.condition:
+                    overwritten += self.latest is not None
+                    self.latest = (captured_at, frame)
+                    self.condition.notify()
+            else:
+                failures += 1
+                time.sleep(0.02)
+            now = time.perf_counter()
+            if now - reported_at >= 1.0:
+                logging.getLogger(__name__).debug(
+                    "performance camera_overwritten=%d read_failures=%d window_s=%.2f",
+                    overwritten, failures, now - reported_at,
+                )
+                overwritten = failures = 0
+                reported_at = now
