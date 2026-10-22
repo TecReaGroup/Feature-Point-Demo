@@ -510,7 +510,7 @@ requires-dist = [
     { name = "pyside6", specifier = ">=6.8,<7" },
     { name = "torch", specifier = ">=2.7,<3", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchvision", specifier = ">=0.22,<1", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "transformers", specifier = ">=4.57.6,<5" },
+    { name = "transformers", specifier = "==4.57.6" },
 ]
 
 [package.metadata.requires-dev]

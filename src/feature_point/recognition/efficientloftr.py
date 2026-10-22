@@ -6,7 +6,7 @@ from dataclasses import replace
 import cv2
 import numpy as np
 import torch
-from transformers import AutoImageProcessor, AutoModel
+from transformers import AutoImageProcessor, EfficientLoFTRForKeypointMatching
 
 from feature_point.config import PROJECT_ROOT, RecognitionSettings
 from feature_point.recognition.geometry import Localization, localize_correspondences
@@ -15,6 +15,30 @@ LOGGER = logging.getLogger(__name__)
 MODEL_ID = "zju-community/efficientloftr"
 MATCH_THRESHOLD = 0.2
 IMAGE_DIVISOR = 32
+
+
+class PairedEfficientLoFTR(EfficientLoFTRForKeypointMatching):
+    """Align the 4.57.6 port's directional coarse indices before fine refinement."""
+
+    def _coarse_matching(self, coarse_features: torch.Tensor, coarse_scale: float) -> tuple:
+        """Return paired coarse cells for this application's single image pair."""
+        _, directional_scores, directional_indices = super()._coarse_matching(
+            coarse_features, coarse_scale,
+        )
+        # Direction 0 is indexed by image-1 cells and contains image-0 cell indices.
+        # Sorting both directions independently breaks correspondence before refinement.
+        source_indices = directional_indices[0, 0]
+        valid = source_indices >= 0
+        target_indices = torch.arange(source_indices.shape[0], device=source_indices.device)[valid]
+        indices = torch.stack((source_indices[valid], target_indices), dim=0).unsqueeze(0)
+        scores = directional_scores[0, 0, valid].reshape(1, 1, -1).expand(-1, 2, -1)
+        if indices.shape[-1] == 0:
+            # Fine refinement requires a nonempty tensor; postprocessing drops this zero score.
+            indices = torch.zeros((1, 2, 1), dtype=torch.long, device=source_indices.device)
+            scores = directional_scores.new_zeros((1, 2, 1))
+        width = coarse_features.shape[-1]
+        keypoints = torch.stack((indices % width, indices // width), dim=-1) * coarse_scale
+        return keypoints, scores, indices
 
 
 class EfficientLoFTRMatcher:
@@ -32,7 +56,9 @@ class EfficientLoFTRMatcher:
         cache = PROJECT_ROOT / "data/model/efficientloftr"
         LOGGER.info("Loading %s on %s cache=%s", MODEL_ID, self.device_name, cache)
         self.processor = AutoImageProcessor.from_pretrained(MODEL_ID, cache_dir=str(cache))
-        self.model = AutoModel.from_pretrained(MODEL_ID, cache_dir=str(cache)).eval().to(self.device)
+        self.model = PairedEfficientLoFTR.from_pretrained(
+            MODEL_ID, cache_dir=str(cache),
+        ).eval().to(self.device)
         self.reference_points = np.empty((0, 2), dtype=np.float32)
         self.reference_image = None
         self.reference_bounds = (0, 0, 0, 0)

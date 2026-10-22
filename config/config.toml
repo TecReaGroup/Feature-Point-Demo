@@ -21,6 +21,6 @@ detection_threshold = 0.05
 # ALIKED only: maximum extracted keypoints per image.
 max_keypoints = 1024
 image_size = 768
-min_inliers = 12
-min_inlier_ratio = 0.45
+min_inliers = 8
+min_inlier_ratio = 0.25
 ransac_threshold = 4.0
