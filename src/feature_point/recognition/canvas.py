@@ -8,6 +8,9 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 MIN_SELECTION_SIZE = 32
+CONFIDENCE_BADGE_WIDTH = 156
+CONFIDENCE_BADGE_HEIGHT = 44
+CONFIDENCE_BADGE_MARGIN = 8
 
 def frame_image(frame) -> QImage:
     """Return an owning RGB image safe across frame lifetimes."""
@@ -30,18 +33,20 @@ class VideoCanvas(QWidget):
         self.frame = None
         self.image = QImage()
         self.polygon = None
+        self.confidence = 0.0
         self.selecting = False
         self.drag_start = None
         self.drag_end = None
         self.image_rect = QRectF()
 
-    def set_frame(self, frame, polygon=None) -> None:
+    def set_frame(self, frame, polygon=None, confidence: float = 0.0) -> None:
         """Display a frame and its own localization without temporal mismatch."""
         if self.selecting:
             return
         self.frame = frame
         self.image = frame_image(frame)
         self.polygon = polygon
+        self.confidence = confidence
         self.update()
 
     def begin_selection(self) -> None:
@@ -86,6 +91,7 @@ class VideoCanvas(QWidget):
         width, height = self.image.width() * scale, self.image.height() * scale
         self.image_rect = QRectF((self.width() - width) / 2, (self.height() - height) / 2, width, height)
         painter.drawImage(self.image_rect, self.image)
+        painter.save()
         painter.translate(self.image_rect.topLeft())
         painter.scale(scale, scale)
         painter.setPen(QPen(QColor("#57e6b5"), 2.5 / scale))
@@ -94,6 +100,30 @@ class VideoCanvas(QWidget):
             painter.drawPolygon(QPolygonF([QPointF(float(x), float(y)) for x, y in self.polygon]))
         if self.drag_start is not None and self.drag_end is not None:
             painter.drawRect(QRectF(self.drag_start, self.drag_end).normalized())
+        painter.restore()
+        if self.polygon is not None:
+            self._paint_confidence(painter)
+
+    def _paint_confidence(self, painter: QPainter) -> None:
+        """Anchor the object confidence panel to the video image's top-left corner."""
+        margin = CONFIDENCE_BADGE_MARGIN
+        x = self.image_rect.left() + margin
+        y = self.image_rect.top() + margin
+        badge = QRectF(x, y, CONFIDENCE_BADGE_WIDTH, CONFIDENCE_BADGE_HEIGHT)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(15, 23, 34, 230))
+        painter.drawRoundedRect(badge, 6, 6)
+        painter.setPen(QColor("#e9fff7"))
+        painter.drawText(QRectF(x + 10, y + 5, badge.width() - 20, 22),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                         f"物体置信度  {self.confidence:.0%}")
+        track = QRectF(x + 10, y + 32, badge.width() - 20, 4)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#3b4957"))
+        painter.drawRoundedRect(track, 2, 2)
+        painter.setBrush(QColor("#57e6b5"))
+        painter.drawRoundedRect(QRectF(track.x(), track.y(),
+                                       track.width() * self.confidence, track.height()), 2, 2)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.RightButton and self.selecting:
@@ -121,9 +151,9 @@ class VideoCanvas(QWidget):
             self.drag_start = self.drag_end = None
             self.update()
             return
-        crop = self.frame[y1:y2, x1:x2].copy()
+        selection = (self.frame.copy(), (x1, y1, x2, y2))
         self.cancel_selection()
-        self.selected.emit(crop)
+        self.selected.emit(selection)
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape and self.selecting:

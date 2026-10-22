@@ -18,7 +18,9 @@ class CameraSettings:
 
 @dataclass(frozen=True, slots=True)
 class RecognitionSettings:
+    algorithm: str = "aliked_lightglue"
     device: str = "cuda"
+    detection_threshold: float = 0.05
     max_keypoints: int = 1024
     image_size: int = 768
     min_inliers: int = 12
@@ -54,6 +56,10 @@ class Settings:
                 raise ValueError(f"{name} must be a positive integer")
         if recognition.device not in ("cuda", "cpu", "auto"):
             raise ValueError("recognition.device must be cuda, cpu or auto")
+        if recognition.algorithm not in ("aliked_lightglue", "efficientloftr"):
+            raise ValueError("recognition.algorithm must be aliked_lightglue or efficientloftr")
+        if not 0 < recognition.detection_threshold <= 1:
+            raise ValueError("recognition.detection_threshold must be in (0, 1]")
         if not 4 <= recognition.min_inliers <= recognition.max_keypoints:
             raise ValueError("min_inliers must be between 4 and max_keypoints")
         if recognition.image_size < 64 or not 0 < recognition.min_inlier_ratio <= 1:

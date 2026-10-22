@@ -11,6 +11,7 @@ from feature_point.config import PROJECT_ROOT, CameraSettings, RecognitionSettin
 
 LOGGER = logging.getLogger(__name__)
 CAMERA_TIMEOUT_SECONDS = 5.0
+RECOGNITION_LOG_INTERVAL_SECONDS = 5.0
 
 
 class CameraWorker(QThread):
@@ -71,6 +72,7 @@ class RecognitionWorker(QThread):
     ready = Signal(str)
     failed = Signal(str)
     reference_ready = Signal(int, int)
+    reference_extracted = Signal(int, object)
     reference_rejected = Signal(int, str)
 
     def __init__(self, settings: RecognitionSettings, parent=None) -> None:
@@ -113,12 +115,18 @@ class RecognitionWorker(QThread):
     def run(self) -> None:
         """Initialize GPU models and process frames without touching any widget."""
         try:
-            from feature_point.recognition.matcher import ObjectMatcher
+            if self.settings.algorithm == "efficientloftr":
+                from feature_point.recognition.efficientloftr import EfficientLoFTRMatcher
 
-            matcher = ObjectMatcher(self.settings)
+                matcher = EfficientLoFTRMatcher(self.settings)
+            else:
+                from feature_point.recognition.matcher import ObjectMatcher
+
+                matcher = ObjectMatcher(self.settings)
             self.ready.emit(matcher.device_name)
             applied_revision = -1
             reference_valid = False
+            last_diagnostic = 0.0
             while not self.isInterruptionRequested():
                 with self.condition:
                     self.condition.wait_for(lambda: self.isInterruptionRequested()
@@ -139,12 +147,20 @@ class RecognitionWorker(QThread):
                         except ValueError as exc:
                             LOGGER.warning("Reference rejected: %s", exc)
                             self.reference_rejected.emit(revision, str(exc))
+                        self.reference_extracted.emit(revision, matcher.reference_points.copy())
                 if not reference_valid or pending is None:
                     continue
                 captured_at, frame = pending
                 started = time.perf_counter()
                 localization = matcher.locate(frame)
                 elapsed = time.perf_counter() - started
+                if time.perf_counter() - last_diagnostic >= RECOGNITION_LOG_INTERVAL_SECONDS:
+                    LOGGER.info(
+                        "Localization revision=%d matches=%d inliers=%d elapsed_ms=%.0f status=%s",
+                        revision, localization.matches, localization.inliers, elapsed * 1000,
+                        localization.reason or "located",
+                    )
+                    last_diagnostic = time.perf_counter()
                 with self.condition:
                     if revision == self.revision:
                         self.latest_detection = (revision, captured_at, frame, localization, elapsed)

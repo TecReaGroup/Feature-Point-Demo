@@ -10,6 +10,7 @@ dependencies = [
     "torch>=2.7,<3",
     "torchvision>=0.22,<1",
     "lightglue",
+    "transformers>=4.57.6,<5",
 ]
 
 [project.scripts]

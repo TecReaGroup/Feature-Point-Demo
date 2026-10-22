@@ -3,16 +3,22 @@
 level = "INFO"
 
 [camera]
+# Options: any nonnegative device index (0 = first camera, 1 = second, 2 = third, ...).
 index = 0
 # Options: dshow, msmf, auto.
 backend = "dshow"
-width = 1280
-height = 720
+width = 1920
+height = 1080
 fps = 30
 
 [recognition]
+# Options: aliked_lightglue, efficientloftr.
+algorithm = "efficientloftr"
 # Options: cuda, cpu, auto. Auto prefers CUDA when available.
 device = "cuda"
+# ALIKED only. Range: (0, 1]. Lower values retain weaker features.
+detection_threshold = 0.05
+# ALIKED only: maximum extracted keypoints per image.
 max_keypoints = 1024
 image_size = 768
 min_inliers = 12

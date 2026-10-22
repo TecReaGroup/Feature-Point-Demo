@@ -2,8 +2,8 @@
 
 import time
 
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QPointF, QTimer, Qt
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QMainWindow, QPushButton, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
@@ -14,6 +14,10 @@ from feature_point.recognition.canvas import VideoCanvas, frame_image
 from feature_point.recognition.worker import CameraWorker, RecognitionWorker
 
 STALE_CAPTURE_SECONDS = 1.0
+ALGORITHM_LABELS = {
+    "aliked_lightglue": "ALIKED + LightGlue",
+    "efficientloftr": "EfficientLoFTR",
+}
 STYLE = """
 QMainWindow, QWidget#workspace { background: #f5f6f8; color: #202a38; }
 QWidget { font-family: 'Segoe UI', 'Microsoft YaHei UI'; font-size: 13px; color: #202a38; }
@@ -50,13 +54,14 @@ class RecognitionWindow(QMainWindow):
     def __init__(self, settings: Settings) -> None:
         super().__init__()
         self.settings = settings
-        self.setWindowTitle("Feature Point · ALIKED + LightGlue")
+        self.setWindowTitle(f"Feature Point · {ALGORITHM_LABELS[settings.recognition.algorithm]}")
         self.resize(1320, 820)
         self.setMinimumSize(960, 640)
         self.setStyleSheet(STYLE)
         self.closing = False
         self.model_ready = False
         self.reference_active = False
+        self.reference_crop = None
         self.revision = 0
         self.camera_available = False
         self.last_capture = 0.0
@@ -68,6 +73,7 @@ class RecognitionWindow(QMainWindow):
         self.recognition.ready.connect(self._model_ready)
         self.recognition.failed.connect(self._model_failed)
         self.recognition.reference_ready.connect(self._reference_ready)
+        self.recognition.reference_extracted.connect(self._reference_extracted)
         self.recognition.reference_rejected.connect(self._reference_rejected)
         self.recognition.start()
         self._start_camera()
@@ -88,7 +94,7 @@ class RecognitionWindow(QMainWindow):
         branding.addWidget(QLabel("实时视觉定位工作台", objectName="muted"))
         heading.addLayout(branding)
         heading.addStretch()
-        heading.addWidget(QLabel("ALIKED  /  LightGlue", objectName="badge"))
+        heading.addWidget(QLabel(ALGORITHM_LABELS[self.settings.recognition.algorithm], objectName="badge"))
         layout.addLayout(heading)
         content = QHBoxLayout()
         content.setSpacing(20)
@@ -234,23 +240,50 @@ class RecognitionWindow(QMainWindow):
         self.device_label.setText("请检查配置及日志，修复后重新启动")
         self._show_message(message)
 
-    def _select_reference(self, crop) -> None:
-        self.revision = self.recognition.set_reference(crop)
+    def _select_reference(self, selection) -> None:
+        frame, (x1, y1, x2, y2) = selection
+        crop = frame[y1:y2, x1:x2].copy()
+        self.reference_crop = crop
+        self.revision = self.recognition.set_reference(selection)
         self.reference_active = False
         self.reference_image.setPixmap(QPixmap.fromImage(frame_image(crop)).scaled(
             self.reference_image.size(), Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         ))
-        self.reference_caption.setText(f"{crop.shape[1]} × {crop.shape[0]} px · 正在提取参考特征")
+        self.reference_caption.setText(f"{crop.shape[1]} × {crop.shape[0]} px · 正在建立参考")
         self.clear_button.setEnabled(True)
         self.metrics.setText("匹配 —   /   内点 —\n推理 — ms")
         self.status.setText("正在建立参考…")
+
+    def _reference_extracted(self, revision: int, points) -> None:
+        """Overlay actual extracted points in crop-local preview coordinates."""
+        if revision != self.revision:
+            return
+        pixmap = QPixmap.fromImage(frame_image(self.reference_crop)).scaled(
+            self.reference_image.size(), Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#10251e"), 1))
+        painter.setBrush(QColor("#57e6b5"))
+        height, width = self.reference_crop.shape[:2]
+        for x, y in points:
+            painter.drawEllipse(QPointF(float(x) * pixmap.width() / width,
+                                       float(y) * pixmap.height() / height), 2.5, 2.5)
+        painter.end()
+        self.reference_image.setPixmap(pixmap)
+        if not self.reference_active:
+            self.reference_caption.setText("各方向有效特征不足 · 请扩大选区")
 
     def _reference_ready(self, revision: int, count: int) -> None:
         if revision != self.revision:
             return
         self.reference_active = True
-        self.reference_caption.setText(f"参考已锁定 · {count} 个特征点")
+        self.reference_caption.setText(
+            f"多角度参考已锁定 · 合并显示 {count} 个特征位置" if count
+            else "参考已锁定 · 等待图像对匹配，绿色点将随匹配更新"
+        )
         self.status.setText("正在搜索物体…")
         self._show_message("绿色轮廓表示通过几何验证的目标；可随时重新框选。")
 
@@ -266,6 +299,7 @@ class RecognitionWindow(QMainWindow):
         self.revision = self.recognition.set_reference(None)
         self.reference_active = False
         self.reference_image.clear()
+        self.reference_crop = None
         self.reference_image.setText("尚未选择物体\n\n在左侧画面中框选一个目标")
         self.reference_caption.setText("参考图固定保留，不随相机画面更新")
         self.clear_button.setEnabled(False)
@@ -301,12 +335,18 @@ class RecognitionWindow(QMainWindow):
         detection = self.recognition.take_detection()
         if detection is not None and not self.canvas.selecting and self.camera_available:
             revision, captured_at, frame, localization, elapsed = detection
-            if revision == self.revision and now - captured_at <= STALE_CAPTURE_SECONDS:
+            if revision == self.revision:
                 self.last_detection = now
-                self.canvas.set_frame(frame, localization.polygon)
-                self.status.setText("已找到目标" if localization.polygon is not None else "未找到 · 持续搜索中")
+                self.canvas.set_frame(frame, localization.polygon, localization.confidence)
+                if localization.reference_points is not None:
+                    self._reference_extracted(revision, localization.reference_points)
+                    self.reference_caption.setText(
+                        f"半稠密匹配 · 当前选区 {len(localization.reference_points)} 对对应点"
+                    )
+                self.status.setText("已找到目标" if localization.polygon is not None else localization.reason)
                 self.metrics.setText(f"匹配 {localization.matches}   /   内点 {localization.inliers}\n"
-                                     f"推理 {elapsed * 1000:.0f} ms · {1 / max(elapsed, 0.001):.1f} FPS")
+                                      f"推理 {elapsed * 1000:.0f} ms · {1 / max(elapsed, 0.001):.1f} FPS\n"
+                                      f"结果画面延迟 {max(0, now - captured_at):.1f} s")
         if (self.reference_active and self.camera_available
                 and now - self.last_detection > STALE_CAPTURE_SECONDS):
             self.canvas.polygon = None
