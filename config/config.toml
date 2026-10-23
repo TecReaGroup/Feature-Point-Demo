@@ -13,7 +13,7 @@ fps = 30
 
 [recognition]
 # Options: aliked_lightglue, efficientloftr.
-algorithm = "efficientloftr"
+algorithm = "aliked_lightglue"
 # Options: cuda, cpu, auto. Auto prefers CUDA when available.
 device = "cuda"
 # ALIKED only. Range: (0, 1]. Lower values retain weaker features.
@@ -22,5 +22,5 @@ detection_threshold = 0.05
 max_keypoints = 1024
 image_size = 768
 min_inliers = 8
-min_inlier_ratio = 0.25
+min_inlier_ratio = 0.08
 ransac_threshold = 4.0

@@ -11,6 +11,26 @@ MIN_QUADRILATERAL_AREA = 100.0
 MIN_REFERENCE_COVERAGE = 0.02
 
 
+def reference_corners(bounds: tuple[int, int, int, int]) -> np.ndarray:
+    """Return the corners of the original selection in clockwise order."""
+    x1, y1, x2, y2 = bounds
+    return np.float32([
+        [x1, y1], [x2 - 1, y1], [x2 - 1, y2 - 1], [x1, y2 - 1],
+    ])
+
+
+def transform_reference_corners(
+    bounds: tuple[int, int, int, int], homography: np.ndarray,
+) -> np.ndarray | None:
+    """Transform the original selection boundary without axis-aligning it."""
+    corners = np.column_stack((reference_corners(bounds), np.ones(4))) @ homography.T
+    denominator = corners[:, 2]
+    if not (np.all(denominator > 1e-6) or np.all(denominator < -1e-6)):
+        return None
+    polygon = corners[:, :2] / denominator[:, None]
+    return polygon.astype(np.float32) if np.isfinite(polygon).all() else None
+
+
 @dataclass(frozen=True, slots=True)
 class Localization:
     polygon: np.ndarray | None
@@ -26,7 +46,7 @@ def localize_correspondences(
     bounds: tuple[int, int, int, int], frame_shape: tuple[int, int],
     settings: RecognitionSettings,
 ) -> Localization:
-    """Project a reference boundary only after spatial and RANSAC verification."""
+    """Project the original selection after spatial and RANSAC verification."""
     count = len(source)
     if count < settings.min_inliers:
         return Localization(None, count, reason=f"匹配不足：{count}/{settings.min_inliers}")
@@ -50,12 +70,9 @@ def localize_correspondences(
     if coverage < MIN_REFERENCE_COVERAGE:
         return Localization(None, count, inliers,
                             f"内点过于集中或共线：覆盖 {coverage:.1%} < {MIN_REFERENCE_COVERAGE:.0%}")
-    corners = np.float32([[x1, y1], [x2 - 1, y1], [x2 - 1, y2 - 1], [x1, y2 - 1]])
-    projected = np.column_stack((corners, np.ones(4))) @ homography.T
-    denominator = projected[:, 2]
-    if not (np.all(denominator > 1e-6) or np.all(denominator < -1e-6)):
+    polygon = transform_reference_corners(bounds, homography)
+    if polygon is None:
         return Localization(None, count, inliers, "透视变换不稳定：目标边界跨越投影奇点")
-    polygon = (projected[:, :2] / denominator[:, None]).astype(np.float32)
     frame_height, frame_width = frame_shape
     if not np.isfinite(polygon).all() or not cv2.isContourConvex(polygon):
         return Localization(None, count, inliers, "投影轮廓异常：非凸或坐标无效")
